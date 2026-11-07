@@ -1,0 +1,221 @@
+import os
+import sqlite3
+import hashlib
+import hmac
+from kivy.app import App
+from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.uix.boxlayout import BoxLayout
+from kivy.uix.gridlayout import GridLayout
+from kivy.uix.label import Label
+from kivy.uix.button import Button
+from kivy.uix.textinput import TextInput
+from kivy.uix.popup import Popup
+from kivy.core.window import Window
+
+Window.clearcolor = (0.94, 0.97, 1, 1)
+
+class TyreApp(App):
+    def build(self):
+        self.db = os.path.join(self.user_data_dir, "tyres.db")
+        self.conn = sqlite3.connect(self.db)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS tyres (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                size TEXT,
+                brand TEXT,
+                price REAL
+            )
+        """)
+        self.conn.commit()
+
+        self.password_file = os.path.join(
+            self.user_data_dir, "password.txt"
+        )
+        if not os.path.exists(self.password_file):
+            self.save_password("Alpha X2")
+
+        self.sm = ScreenManager()
+        self.make_login()
+        self.make_home()
+        self.make_add()
+        self.make_search()
+        self.make_all()
+        self.make_settings()
+        self.sm.current = "login"
+        return self.sm
+
+    def save_password(self, password):
+        salt = os.urandom(16)
+        hashed = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), salt, 100000
+        )
+        with open(self.password_file, "w") as f:
+            f.write(salt.hex() + ":" + hashed.hex())
+
+    def check_password(self, password):
+        with open(self.password_file) as f:
+            salt, saved = f.read().split(":")
+        hashed = hashlib.pbkdf2_hmac(
+            "sha256", password.encode(), bytes.fromhex(salt), 100000
+        )
+        return hmac.compare_digest(hashed.hex(), saved)
+
+    def layout(self, screen, title):
+        root = BoxLayout(orientation="vertical", padding=15, spacing=12)
+        root.add_widget(Label(
+            text=f"[b]JAPAN TYRE CENTER[/b]\n{title}\n[size=14]Awais Creator[/size]",
+            markup=True, color=(0.05, 0.2, 0.5, 1),
+            size_hint_y=None, height=100
+        ))
+        screen.add_widget(root)
+        return root
+
+    def field(self, hint, password=False):
+        return TextInput(
+            hint_text=hint, multiline=False, password=password,
+            size_hint_y=None, height=48
+        )
+
+    def btn(self, text, callback):
+        b = Button(
+            text=text, size_hint_y=None, height=48,
+            background_normal="",
+            background_color=(0.05, 0.3, 0.65, 1)
+        )
+        b.bind(on_release=callback)
+        return b
+
+    def make_login(self):
+        s = Screen(name="login")
+        r = self.layout(s, "TYRE MANAGEMENT SYSTEM")
+        self.login_pass = self.field("Enter Password", True)
+        r.add_widget(self.login_pass)
+        r.add_widget(self.btn("LOGIN", self.login))
+        self.sm.add_widget(s)
+
+    def login(self, *args):
+        if self.check_password(self.login_pass.text):
+            self.sm.current = "home"
+            self.login_pass.text = ""
+        else:
+            self.message("Incorrect password")
+
+    def make_home(self):
+        s = Screen(name="home")
+        r = self.layout(s, "DASHBOARD")
+        r.add_widget(self.btn("ADD NEW TYRE", lambda x: self.go("add")))
+        r.add_widget(self.btn("SEARCH TYRE", lambda x: self.go("search")))
+        r.add_widget(self.btn("ALL TYRE PRICES", lambda x: self.show_all()))
+        r.add_widget(self.btn("SETTINGS", lambda x: self.go("settings")))
+        self.sm.add_widget(s)
+
+    def go(self, name):
+        self.sm.current = name
+
+    def make_add(self):
+        s = Screen(name="add")
+        r = self.layout(s, "ADD NEW TYRE")
+        self.size = self.field("Tyre size e.g. 2.75-17")
+        self.brand = self.field("Brand name")
+        self.price = self.field("Price")
+        for item in (self.size, self.brand, self.price):
+            r.add_widget(item)
+        r.add_widget(self.btn("SAVE TYRE", self.save_tyre))
+        r.add_widget(self.btn("BACK", lambda x: self.go("home")))
+        self.sm.add_widget(s)
+
+    def save_tyre(self, *args):
+        try:
+            size = self.size.text.strip()
+            brand = self.brand.text.strip()
+            price = float(self.price.text)
+            if not size or not brand or price < 0:
+                raise ValueError
+            self.conn.execute(
+                "INSERT INTO tyres(size,brand,price) VALUES(?,?,?)",
+                (size, brand, price)
+            )
+            self.conn.commit()
+            self.message("Tyre saved successfully")
+            self.size.text = ""
+            self.brand.text = ""
+            self.price.text = ""
+        except ValueError:
+            self.message("Enter valid size, brand and price")
+
+    def make_search(self):
+        s = Screen(name="search")
+        r = self.layout(s, "SEARCH TYRE")
+        self.search_box = self.field("Enter tyre size")
+        r.add_widget(self.search_box)
+        r.add_widget(self.btn("SEARCH", self.search_tyre))
+        self.search_result = Label(
+            text="", color=(0, 0, 0, 1)
+        )
+        r.add_widget(self.search_result)
+        r.add_widget(self.btn("BACK", lambda x: self.go("home")))
+        self.sm.add_widget(s)
+
+    def search_tyre(self, *args):
+        rows = self.conn.execute(
+            "SELECT size,brand,price FROM tyres WHERE size LIKE ?",
+            ("%" + self.search_box.text.strip() + "%",)
+        ).fetchall()
+        self.search_result.text = "\n".join(
+            f"{a} | {b} | Rs. {c:g}" for a, b, c in rows
+        ) or "No tyre found"
+
+    def make_all(self):
+        s = Screen(name="all")
+        self.all_screen = s
+        self.all_layout = self.layout(s, "ALL TYRE PRICES")
+        self.sm.add_widget(s)
+
+    def show_all(self):
+        self.all_layout.clear_widgets()
+        self.all_layout.add_widget(Label(
+            text="[b]JAPAN TYRE CENTER[/b]\nALL TYRE PRICES",
+            markup=True, color=(0.05, 0.2, 0.5, 1),
+            size_hint_y=None, height=70
+        ))
+        rows = self.conn.execute(
+            "SELECT id,size,brand,price FROM tyres ORDER BY id DESC"
+        ).fetchall()
+        for i, size, brand, price in rows:
+            self.all_layout.add_widget(Label(
+                text=f"{size} | {brand} | Rs. {price:g}",
+                color=(0, 0, 0, 1), size_hint_y=None, height=35
+            ))
+        self.all_layout.add_widget(
+            self.btn("BACK", lambda x: self.go("home"))
+        )
+        self.go("all")
+
+    def make_settings(self):
+        s = Screen(name="settings")
+        r = self.layout(s, "SETTINGS")
+        self.new_pass = self.field("New password", True)
+        r.add_widget(self.new_pass)
+        r.add_widget(self.btn("CHANGE PASSWORD", self.change_password))
+        r.add_widget(self.btn("BACK", lambda x: self.go("home")))
+        self.sm.add_widget(s)
+
+    def change_password(self, *args):
+        if len(self.new_pass.text) < 4:
+            self.message("Password must be at least 4 characters")
+            return
+        self.save_password(self.new_pass.text)
+        self.new_pass.text = ""
+        self.message("Password changed")
+
+    def message(self, msg):
+        Popup(
+            title="Japan Tyre Center",
+            content=Label(text=msg),
+            size_hint=(0.8, 0.3)
+        ).open()
+
+    def on_stop(self):
+        self.conn.close()
+
+TyreApp().run()
